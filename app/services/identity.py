@@ -113,11 +113,28 @@ _CONTEXT_BUILDERS = {
 async def identify_by_phone(
     db: AsyncSession, phone_number: str
 ) -> IdentifyResponse:
-    """Primary path: look up phone number in identity_lookup."""
+    """Primary path: look up phone number in identity_lookup with country code normalization."""
+    # 1. Try exact match first
     result = await db.execute(
         select(IdentityLookup).where(IdentityLookup.phone_number == phone_number)
     )
-    identity = result.scalar_one_or_none()
+    identity = result.scalars().first()
+
+    # 2. Try normalized suffix match if exact match fails
+    if not identity:
+        # Extract digits
+        digits = "".join(c for c in phone_number if c.isdigit())
+        if digits.startswith("0"):
+            digits = digits[1:]
+        if digits.startswith("962"):
+            digits = digits[3:]
+
+        if digits:
+            result = await db.execute(
+                select(IdentityLookup).where(IdentityLookup.phone_number.like(f"%{digits}"))
+            )
+            identity = result.scalars().first()
+
     if not identity:
         raise HTTPException(status_code=404, detail="Phone number not recognized.")
 
@@ -125,11 +142,12 @@ async def identify_by_phone(
     result = await db.execute(
         select(model_cls).where(getattr(model_cls, pk_field) == identity.linked_id)
     )
-    actor = result.scalar_one_or_none()
+    actor = result.scalars().first()
     if not actor:
         raise HTTPException(status_code=404, detail="Linked actor record not found.")
 
     return await builder(db, actor)
+
 
 
 async def identify_by_order_id(
